@@ -46,10 +46,13 @@ KVARN_MAX_KV_SPLITS = 64  # cap of the context-adaptive schedule below
 _DECODE_AUTOTUNE_CONFIGS = [
     triton.Config({"BLOCK_N": bn}, num_warps=nw, num_stages=ns)
     for bn in (16, 32, 64) for nw in (2, 4) for ns in (1, 2)
-] + [
-    triton.Config({"BLOCK_N": 32}, num_warps=4, num_stages=2, maxnreg=mr)
-    for mr in (64, 96)
 ]
+if not getattr(torch.version, "hip", None):
+    _DECODE_AUTOTUNE_CONFIGS += [
+        triton.Config({"BLOCK_N": 32}, num_warps=4, num_stages=2, maxnreg=mr)
+        for mr in (64, 96)
+    ]
+
 
 
 def adaptive_num_kv_splits(max_blocks_per_req: int) -> int:

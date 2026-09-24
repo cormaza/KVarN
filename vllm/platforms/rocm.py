@@ -76,6 +76,7 @@ _ROCM_DEVICE_ID_NAME_MAP: dict[str, str] = {
     # RDNA 4 discrete (Navi 48)
     "0x7550": "AMD_Radeon_RX9070XT",  # gfx1201
     "0x7551": "AMD_Radeon_R9700",  # gfx1201
+    "0x7590": "AMD_Radeon_RX9060XT",  # gfx1200, Navi 44
 }
 
 
@@ -419,6 +420,7 @@ def _get_backend_priorities(
         backends.append(AttentionBackendEnum.ROCM_AITER_UNIFIED_ATTN)
     backends.append(AttentionBackendEnum.TRITON_ATTN)
     backends.append(AttentionBackendEnum.TURBOQUANT)
+    backends.append(AttentionBackendEnum.KVARN)
 
     return backends
 
@@ -786,6 +788,81 @@ class RocmPlatform(Platform):
 
         if parallel_config.worker_cls == "auto":
             parallel_config.worker_cls = "vllm.v1.worker.gpu_worker.Worker"
+
+        # KVarN keeps a fixed-size fp16 tail pool (sink + in-progress tile per
+        # active request, per layer). Its size bounds peak concurrency, so cap
+        # max_num_seqs at what a bounded pool budget supports.
+        model_config = vllm_config.model_config
+        scheduler_config = vllm_config.scheduler_config
+        cache_config = vllm_config.cache_config
+        cache_dtype = getattr(cache_config, "cache_dtype", None)
+        if (
+            model_config is not None
+            and isinstance(cache_dtype, str)
+            and cache_dtype.startswith("kvarn_")
+            and not cache_dtype.startswith("kvarn_mla")
+            and not getattr(model_config, "use_mla", False)
+        ):
+            from vllm.model_executor.layers.quantization.kvarn.config import (
+                KVarNConfig,
+            )
+
+            head_size = model_config.get_head_size()
+            if head_size not in (128, 256, 512):
+                raise ValueError(
+                    f"{cache_dtype} requires head_dim in (128, 256, 512), but this "
+                    f"model has head_dim={head_size}; use a different "
+                    f"--kv-cache-dtype for this model."
+                )
+
+            skip_layers = cache_config.kv_cache_dtype_skip_layers
+            _quant_sliding = os.environ.get("KVARN_QUANT_SLIDING") == "1"
+            if _quant_sliding:
+                while "sliding_window" in skip_layers:
+                    skip_layers.remove("sliding_window")
+                logger.info("KVarN (%s): KVARN_QUANT_SLIDING=1 — quantizing "
+                            "sliding-window layers too.", cache_dtype)
+            elif "sliding_window" not in skip_layers:
+                skip_layers.append("sliding_window")
+                logger.info(
+                    "KVarN (%s): sliding-window attention layers (if any) are "
+                    "kept in full precision; KVarN compresses full-attention "
+                    "layers only.",
+                    cache_dtype,
+                )
+
+            kvarn_cfg = KVarNConfig.from_cache_dtype(
+                cache_dtype, model_config.get_head_size()
+            )
+            total_gpu_bytes = cls.get_device_total_memory()
+            weight_bytes = kvarn_cfg.estimate_weight_bytes(
+                model_config.model,
+                tensor_parallel_size=parallel_config.tensor_parallel_size,
+            )
+            kvarn_layers = KVarNConfig.num_kvarn_layers(model_config, parallel_config)
+            supported = kvarn_cfg.max_supported_seqs(
+                total_gpu_bytes=total_gpu_bytes,
+                num_kv_heads=model_config.get_num_kv_heads(parallel_config),
+                num_layers=kvarn_layers,
+                max_num_batched_tokens=scheduler_config.max_num_batched_tokens,
+                gpu_memory_utilization=cache_config.gpu_memory_utilization,
+                weight_bytes=weight_bytes,
+            )
+            if scheduler_config.max_num_seqs > supported:
+                _budget_kind = ("post-weight usable memory"
+                                if weight_bytes is not None else "total GPU memory")
+                logger.warning(
+                    "KVarN (%s): capping max_num_seqs %d -> %d so the fp16 tail "
+                    "pool fits its budget (a share of %s). To raise it: increase "
+                    "--gpu-memory-utilization or set KVARN_POOL_MEM_FRAC higher "
+                    "(the pool, not KV capacity, is the limit here).",
+                    cache_dtype,
+                    scheduler_config.max_num_seqs,
+                    supported,
+                    _budget_kind,
+                )
+                scheduler_config.max_num_seqs = supported
+
 
     @classmethod
     def verify_model_arch(cls, model_arch: str) -> None:
