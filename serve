@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+# ==============================================================================
+# serve - Unified Server Runner for Qwen3.8-27B GSQ (AMD Radeon RX 9060 XT)
+# ==============================================================================
+# Supports:
+#   - Native ROCm/HIP hardware acceleration (default: llama.cpp backend with MTP & Vision)
+#   - vLLM backend (--backend vllm)
+# ==============================================================================
+
+set -euo pipefail
+
+SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
+ROOT_DIR="$(cd "$(dirname "${SCRIPT_PATH}")" && pwd)"
+if [[ "$(basename "${ROOT_DIR}")" == "scripts" ]]; then
+    ROOT_DIR="$(cd "${ROOT_DIR}/.." && pwd)"
+fi
+AI_DIR="$(cd "${ROOT_DIR}/.." && pwd)"
+
+BACKEND="auto"
+REMAINING_ARGS=()
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --backend)
+            BACKEND="$2"
+            shift 2
+            ;;
+        --backend=*)
+            BACKEND="${1#*=}"
+            shift
+            ;;
+        *)
+            REMAINING_ARGS+=("$1")
+            shift
+            ;;
+    esac
+done
+
+if [[ "${BACKEND}" == "vllm" ]]; then
+    if [[ -f "${AI_DIR}/vllm/start-qwen3.8-gsq.sh" ]]; then
+        exec "${AI_DIR}/vllm/start-qwen3.8-gsq.sh" "${REMAINING_ARGS[@]}"
+    else
+        echo "[ERROR] No se encontró el script de vllm en ${AI_DIR}/vllm/start-qwen3.8-gsq.sh"
+        exit 1
+    fi
+fi
+
+# Auto / Default: Use native AMD ROCm accelerated GSQ runner
+if [[ -f "${AI_DIR}/llama.cpp/start-qwen3.8-gsq.sh" ]]; then
+    exec "${AI_DIR}/llama.cpp/start-qwen3.8-gsq.sh" "${REMAINING_ARGS[@]}"
+elif [[ -f "${AI_DIR}/vllm/start-qwen3.8-gsq.sh" ]]; then
+    exec "${AI_DIR}/vllm/start-qwen3.8-gsq.sh" "${REMAINING_ARGS[@]}"
+else
+    echo "[ERROR] No se encontró ningún lanzador de servicio en ${AI_DIR}/llama.cpp ni ${AI_DIR}/vllm."
+    exit 1
+fi

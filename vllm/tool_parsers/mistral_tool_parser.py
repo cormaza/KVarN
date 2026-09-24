@@ -13,17 +13,30 @@ from typing import TYPE_CHECKING, Any
 
 import ijson
 import regex as re
-from mistral_common.protocol.instruct.tool_calls import (
-    NamedToolChoice as MistralNamedToolChoice,
-)
+try:
+    from mistral_common.protocol.instruct.tool_calls import (
+        NamedToolChoice as MistralNamedToolChoice,
+        ToolChoiceEnum as MistralToolChoiceEnum,
+    )
+except ImportError:
+    try:
+        from mistral_common.protocol.instruct.tool_calls import (
+            ToolChoice as MistralToolChoiceEnum,
+        )
+    except ImportError:
+        MistralToolChoiceEnum = None  # type: ignore
+    from mistral_common.base import MistralBase
+    from mistral_common.protocol.instruct.tool_calls import Function
+
+    class MistralNamedToolChoice(MistralBase):  # type: ignore
+        type: str = "function"
+        function: Function
+
 from mistral_common.protocol.instruct.tool_calls import (
     Tool as MistralTool,
 )
 from mistral_common.protocol.instruct.tool_calls import (
     ToolChoice as MistralToolChoice,
-)
-from mistral_common.protocol.instruct.tool_calls import (
-    ToolChoiceEnum as MistralToolChoiceEnum,
 )
 from pydantic import Field
 
@@ -40,10 +53,18 @@ from vllm.entrypoints.openai.engine.protocol import (
 )
 from vllm.entrypoints.openai.responses.protocol import ResponsesRequest
 from vllm.logger import init_logger
-from vllm.reasoning.mistral_reasoning_parser import MistralReasoningParser
+try:
+    from vllm.reasoning.mistral_reasoning_parser import MistralReasoningParser
+except (ImportError, ModuleNotFoundError):
+    MistralReasoningParser = None  # type: ignore
+
 from vllm.sampling_params import StructuredOutputsParams
 from vllm.tokenizers import TokenizerLike
-from vllm.tokenizers.mistral import MistralTokenizer
+
+try:
+    from vllm.tokenizers.mistral import MistralTokenizer
+except (ImportError, ModuleNotFoundError):
+    MistralTokenizer = None  # type: ignore
 from vllm.tool_parsers.abstract_tool_parser import (
     Tool,
     ToolParser,

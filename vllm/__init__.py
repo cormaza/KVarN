@@ -8,6 +8,27 @@ from .version import __version__, __version_tuple__  # isort:skip
 
 import typing
 
+import os
+
+for _extra_path in [
+    "/usr/local/lib/python3.12/dist-packages/vllm",
+    "/usr/local/lib/python3/dist-packages/vllm",
+]:
+    if os.path.exists(_extra_path) and _extra_path not in __path__:
+        __path__.append(_extra_path)
+
+import torch
+if hasattr(torch, "accelerator"):
+    for _mem_fn in [
+        "empty_cache",
+        "memory_stats",
+        "memory_reserved",
+        "reset_peak_memory_stats",
+        "max_memory_allocated",
+    ]:
+        if not hasattr(torch.accelerator, _mem_fn) and hasattr(torch.cuda, _mem_fn):
+            setattr(torch.accelerator, _mem_fn, getattr(torch.cuda, _mem_fn))
+
 # The environment variables override should be imported before any other
 # modules to ensure that the environment variables are set before any
 # other modules are imported.
