@@ -681,9 +681,9 @@ class CompressedTensorsConfig(QuantizationConfig):
             and not output_quant.dynamic
         )
         # Static int8-activation layers, plus sub-byte weight-only layers (e.g.
-        # 2-bit lm_head) that marlin-backed WNA16 cannot serve. Standard 4/8-bit
+        # 2-bit lm_head) that marlin-backed WNA16 cannot serve. Standard 3/4/8-bit
         # weight-only (no activations) falls through to WNA16.
-        is_subbyte_weight_only = weight_quant.num_bits not in WNA16_SUPPORTED_BITS
+        is_subbyte_weight_only = weight_quant.num_bits == 2
         needs_wNa8o8 = is_intN_weight and (
             (is_static_int8_in and is_static_int8_out) or is_subbyte_weight_only
         )

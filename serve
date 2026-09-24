@@ -2,12 +2,19 @@
 # ==============================================================================
 # serve - Unified Server Runner for Qwen3.8-27B GSQ (AMD Radeon RX 9060 XT)
 # ==============================================================================
-# Supports:
-#   - Native ROCm/HIP hardware acceleration (default: llama.cpp backend with MTP & Vision)
-#   - vLLM backend (--backend vllm)
+# Soporta:
+#   - Backend Nativo ROCm/HIP (por defecto: llama.cpp con MTP y Visión multimodal)
+#   - Backend vLLM (--backend vllm [--force])
 # ==============================================================================
 
 set -euo pipefail
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+CYAN='\033[0;36m'
+BOLD='\033[1m'
+NC='\033[0m'
 
 SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
 ROOT_DIR="$(cd "$(dirname "${SCRIPT_PATH}")" && pwd)"
@@ -17,17 +24,52 @@ fi
 AI_DIR="$(cd "${ROOT_DIR}/.." && pwd)"
 
 BACKEND="auto"
+FORCE=0
 REMAINING_ARGS=()
+
+show_help() {
+    echo -e "${BOLD}Uso:${NC} $(basename "$0") [opciones] [argumentos del backend]
+
+Lanzador unificado para servir el modelo ${BOLD}Qwen3.8-27B GSQ${NC} acelerado
+en GPU ${BOLD}AMD Radeon RX 9060 XT (16 GB VRAM)${NC} con soporte completo para
+visión multimodal, razonamiento y decodificación especulativa MTP.
+
+${BOLD}Opciones principales:${NC}
+  --backend BACKEND    Motor de inferencia a utilizar:
+                         - ${GREEN}llama${NC} o ${GREEN}rocm${NC} (por defecto): Backend nativo ROCm/HIP optimizado
+                           con 100% offload en GPU, visión (mmproj) y aceleración MTP.
+                         - ${CYAN}vllm${NC}: Backend vLLM en contenedor Docker ROCm.
+  --force              Fuerza la ejecución en el backend seleccionado ignorando
+                       advertencias de compatibilidad de arquitectura.
+  -h, --help           Muestra esta ayuda.
+
+${BOLD}Ejemplos:${NC}
+  $(basename "$0")                               # Servir con backend nativo ROCm (puerto 8080)
+  $(basename "$0") -c 131072                     # Servir con 128k de contexto nativo
+  $(basename "$0") --slots 2                     # 2 slots paralelos para agentes
+  $(basename "$0") --no-thinking                 # Modo instruct directo sin etiquetas <think>
+  $(basename "$0") --backend vllm --force        # Forzar vLLM en contenedor Docker ROCm
+
+Todos los argumentos adicionales se transmiten directamente al backend correspondiente."
+}
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --backend)
-            BACKEND="$2"
+            BACKEND="${2:-auto}"
             shift 2
             ;;
         --backend=*)
             BACKEND="${1#*=}"
             shift
+            ;;
+        --force)
+            FORCE=1
+            shift
+            ;;
+        -h|--help)
+            show_help
+            exit 0
             ;;
         *)
             REMAINING_ARGS+=("$1")
@@ -36,21 +78,49 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+# Normalizar nombre del backend
+BACKEND="$(echo "${BACKEND}" | tr '[:upper:]' '[:lower:]')"
+
 if [[ "${BACKEND}" == "vllm" ]]; then
+    if [[ "${FORCE}" -eq 0 ]]; then
+        echo -e "${YELLOW}========================================================================${NC}"
+        echo -e "${BOLD}${YELLOW}[ADVERTENCIA] Compatibilidad de vLLM con 3-Bit GSQ en AMD ROCm${NC}"
+        echo -e "${YELLOW}========================================================================${NC}"
+        echo -e "vLLM no dispone actualmente de kernels ROCm/HIP para pesos cuantizados"
+        echo -e "en 3 bits GSQ (uint3b4) en GPUs AMD Radeon. En el código de vLLM, el kernel"
+        echo -e "de 3-bit GSQ ('humming') está implementado en ensamblador PTX exclusivo de"
+        echo -e "NVIDIA CUDA."
+        echo -e ""
+        echo -e "Para tu GPU ${BOLD}AMD Radeon RX 9060 XT${NC}, el backend recomendado y nativo es"
+        echo -e "${GREEN}${BOLD}llama.cpp (ROCm/HIP)${NC}, el cual ya cuenta con kernels GSQ-RCO/IQ optimizados,"
+        echo -e "soporte de visión multimodal (mmproj), aceleración MTP y servidor compatible"
+        echo -e "con OpenAI en el puerto 8080."
+        echo -e ""
+        echo -e "${CYAN}-> Redirigiendo automáticamente al backend nativo ROCm recomendado...${NC}"
+        echo -e "   (Si deseas forzar el inicio de vLLM para pruebas, añade ${BOLD}--force${NC}:"
+        echo -e "    ${CYAN}./serve --backend vllm --force${NC})"
+        echo -e "${YELLOW}========================================================================\n${NC}"
+        
+        if [[ -f "${AI_DIR}/llama.cpp/start-qwen3.8-gsq.sh" ]]; then
+            exec "${AI_DIR}/llama.cpp/start-qwen3.8-gsq.sh" "${REMAINING_ARGS[@]}"
+        fi
+    fi
+
     if [[ -f "${AI_DIR}/vllm/start-qwen3.8-gsq.sh" ]]; then
+        echo -e "${CYAN}[INFO] Iniciando backend vLLM (--force activo)...${NC}"
         exec "${AI_DIR}/vllm/start-qwen3.8-gsq.sh" "${REMAINING_ARGS[@]}"
     else
-        echo "[ERROR] No se encontró el script de vllm en ${AI_DIR}/vllm/start-qwen3.8-gsq.sh"
+        echo -e "${RED}[ERROR] No se encontró el script de vllm en ${AI_DIR}/vllm/start-qwen3.8-gsq.sh${NC}"
         exit 1
     fi
 fi
 
-# Auto / Default: Use native AMD ROCm accelerated GSQ runner
+# Backend nativo ROCm / HIP (por defecto / auto / llama / rocm)
 if [[ -f "${AI_DIR}/llama.cpp/start-qwen3.8-gsq.sh" ]]; then
     exec "${AI_DIR}/llama.cpp/start-qwen3.8-gsq.sh" "${REMAINING_ARGS[@]}"
 elif [[ -f "${AI_DIR}/vllm/start-qwen3.8-gsq.sh" ]]; then
     exec "${AI_DIR}/vllm/start-qwen3.8-gsq.sh" "${REMAINING_ARGS[@]}"
 else
-    echo "[ERROR] No se encontró ningún lanzador de servicio en ${AI_DIR}/llama.cpp ni ${AI_DIR}/vllm."
+    echo -e "${RED}[ERROR] No se encontró ningún lanzador de servicio en ${AI_DIR}/llama.cpp ni ${AI_DIR}/vllm.${NC}"
     exit 1
 fi
